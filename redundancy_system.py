@@ -18,17 +18,14 @@ from mysql.connector import Error
 # ─────────────────────────────────────────────
 
 def get_connection():
-    """
-    Create and return a connection to AWS RDS MySQL.
-    Reads credentials from environment variables (never hardcode them).
-    """
+    """Connect to AWS RDS MySQL using environment variables."""
     try:
         conn = mysql.connector.connect(
-            host     = os.environ.get("DB_HOST"),       # AWS RDS endpoint
+            host     = os.environ.get("DB_HOST"),
             port     = int(os.environ.get("DB_PORT", 3306)),
-            user     = os.environ.get("DB_USER"),       # master username
-            password = os.environ.get("DB_PASSWORD"),   # master password
-            database = os.environ.get("DB_NAME"),       # database name
+            user     = os.environ.get("DB_USER"),
+            password = os.environ.get("DB_PASSWORD"),
+            database = os.environ.get("DB_NAME"),
         )
         return conn
     except Error as e:
@@ -41,11 +38,34 @@ def get_connection():
 # ─────────────────────────────────────────────
 
 def init_db():
-    """Create the required tables in AWS RDS MySQL if they don't exist."""
+    """
+    Auto-create the database if it doesn't exist,
+    then create required tables inside it.
+    """
+    db_name = os.environ.get("DB_NAME", "redundancy_db")
+
+    # Step 1: Connect WITHOUT database to create it first
+    try:
+        temp_conn = mysql.connector.connect(
+            host     = os.environ.get("DB_HOST"),
+            port     = int(os.environ.get("DB_PORT", 3306)),
+            user     = os.environ.get("DB_USER"),
+            password = os.environ.get("DB_PASSWORD"),
+        )
+        temp_cursor = temp_conn.cursor()
+        temp_cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{db_name}`")
+        temp_conn.commit()
+        temp_cursor.close()
+        temp_conn.close()
+        print(f"[DB] Database '{db_name}' ready.")
+    except Error as e:
+        print(f"[DB ERROR] Could not create database: {e}")
+        raise
+
+    # Step 2: Connect WITH database and create tables
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Main table: stores only unique, verified records
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS unique_records (
             id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -56,7 +76,6 @@ def init_db():
         )
     """)
 
-    # Log table: tracks every insertion attempt and its outcome
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS insertion_log (
             id           INT AUTO_INCREMENT PRIMARY KEY,
@@ -152,13 +171,11 @@ def add_entry(content: str) -> dict:
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Always log every attempt
     cursor.execute(
         "INSERT INTO insertion_log (content, status, reason, attempted_at) VALUES (%s, %s, %s, %s)",
         (content, status, classification["reason"], timestamp)
     )
 
-    # Only write to unique_records if truly unique
     if status == "UNIQUE":
         data_hash = compute_hash(content)
         cursor.execute(
@@ -233,38 +250,6 @@ def get_stats() -> dict:
     }
 
 
-# ─────────────────────────────────────────────
-#  DEMO / TEST RUN
-# ─────────────────────────────────────────────
-
 if __name__ == "__main__":
     init_db()
-
-    print("\n" + "="*55)
-    print("   DATA REDUNDANCY REMOVAL SYSTEM — TEST RUN")
-    print("="*55)
-
-    test_entries = [
-        "John Doe, john@example.com, +91-9876543210",
-        "Jane Smith, jane@example.com, +91-9123456789",
-        "John Doe, john@example.com, +91-9876543210",    # exact duplicate
-        "John doe, john@example.com, +91-9876543210",    # near-duplicate
-        "Alice Johnson, alice@company.org, +1-555-0101",
-        "Jane Smith, jane@example.com, +91-9123456789",  # exact duplicate
-        "Bob Martin, bob.martin@work.net, +44-7911-123456",
-        "Alice Johnsonn, alice@company.org, +1-555-0101", # near-duplicate typo
-    ]
-
-    for entry in test_entries:
-        result = add_entry(entry)
-        icon = "✅" if result["status"] == "UNIQUE" else ("🔴" if result["status"] == "REDUNDANT" else "⚠️")
-        print(f"\n{icon} [{result['status']}] \"{entry}\"")
-        print(f"   → {result['reason']}")
-        if result["similar_to"]:
-            print(f"   → Similar to: \"{result['similar_to'][:50]}\"")
-
-    print("\n" + "="*55)
-    stats = get_stats()
-    for k, v in stats.items():
-        print(f"  {k.replace('_',' ').title():<28}: {v}")
-    print("\n✅ Done. Run app.py to launch the dashboard.\n")
+    print("\n[TEST] System ready. Run app.py to launch the dashboard.\n")
